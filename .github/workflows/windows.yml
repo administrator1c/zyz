@@ -1,0 +1,44 @@
+
+name: WINDOWS VPS TEST
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-vps:
+    runs-on: windows-2022
+    timeout-minutes: 300
+
+    steps:
+      - name: Windows System Information
+        shell: pwsh
+        run: |
+          Write-Host "=== WINDOWS VPS ==="
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, OsVersion
+
+          Write-Host "=== CPU ==="
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores
+
+          Write-Host "=== RAM ==="
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object TotalPhysicalMemory
+
+          Write-Host "=== DISK ==="
+          Get-PSDrive -PSProvider FileSystem
+
+      - name: Save System Information
+        shell: pwsh
+        run: |
+          Get-ComputerInfo |
+            Out-File system-info.txt
+
+      - name: Upload Information
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-system-info
+          path: system-info.txt
