@@ -1,44 +1,99 @@
 
-name: WINDOWS VPS TEST
+name: WINDOWS NGROK V2.0
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/windows.yml'
 
 permissions:
   contents: read
 
 jobs:
-  windows-vps:
+  windows:
+    name: Windows Server 2022
     runs-on: windows-2022
-    timeout-minutes: 300
+    timeout-minutes: 30
 
     steps:
-      - name: Windows System Information
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: System Information
         shell: pwsh
         run: |
-          Write-Host "=== WINDOWS VPS ==="
+          Write-Host "=== WINDOWS SERVER ==="
+
           Get-ComputerInfo |
             Select-Object WindowsProductName, OsVersion
 
-          Write-Host "=== CPU ==="
           Get-CimInstance Win32_Processor |
             Select-Object Name, NumberOfCores
 
-          Write-Host "=== RAM ==="
           Get-CimInstance Win32_ComputerSystem |
             Select-Object TotalPhysicalMemory
 
-          Write-Host "=== DISK ==="
-          Get-PSDrive -PSProvider FileSystem
+      - name: Check RDP
+        shell: pwsh
+        run: |
+          Write-Host "=== RDP SERVICE ==="
 
-      - name: Save System Information
+          Get-Service TermService |
+            Select-Object Name, Status, StartType
+
+          Get-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name fDenyTSConnections
+
+      - name: Install ngrok
+        shell: pwsh
+        run: |
+          choco install ngrok -y --no-progress
+          ngrok version
+
+      - name: Configure ngrok
+        shell: pwsh
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace(
+            $env:NGROK_AUTHTOKEN
+          )) {
+            throw "Missing NGROK_AUTHTOKEN"
+          }
+
+          ngrok config add-authtoken `
+            $env:NGROK_AUTHTOKEN
+
+          Write-Host "ngrok configured"
+
+      - name: Generate Reports
+        if: always()
         shell: pwsh
         run: |
           Get-ComputerInfo |
-            Out-File system-info.txt
+            Out-File windows-info.txt
 
-      - name: Upload Information
+          Get-Service TermService |
+            Out-File rdp-status.txt
+
+          if (Get-Command ngrok -ErrorAction SilentlyContinue) {
+            ngrok version |
+              Out-File ngrok-version.txt
+          } else {
+            "ngrok not installed" |
+              Out-File ngrok-version.txt
+          }
+
+      - name: Upload Reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-system-info
-          path: system-info.txt
+          name: windows-ngrok-reports
+          path: |
+            windows-info.txt
+            rdp-status.txt
+            ngrok-version.txt
