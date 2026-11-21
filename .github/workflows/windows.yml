@@ -1,5 +1,5 @@
 
-name: Windows RDP via ngrok
+name: Windows RDP - ngrok
 
 on:
   workflow_dispatch:
@@ -9,10 +9,63 @@ permissions:
 
 jobs:
   windows:
+    name: Windows Desktop RDP
     runs-on: windows-2022
     timeout-minutes: 60
 
     steps:
+      - name: System Information
+        shell: powershell
+        run: |
+          Write-Host "=== WINDOWS ==="
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, OsVersion
+
+          Write-Host "=== CPU ==="
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores
+
+          Write-Host "=== RAM ==="
+          $ram = Get-CimInstance Win32_ComputerSystem
+          $gb = [math]::Round(
+            $ram.TotalPhysicalMemory / 1GB, 2
+          )
+          Write-Host "Physical RAM: $gb GB"
+
+          Write-Host "=== GPU ==="
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion
+
+      - name: Check Virtual Memory 128GB
+        shell: powershell
+        run: |
+          $target = 128
+          $free = (Get-PSDrive C).Free / 1GB
+
+          Write-Host "Requested pagefile: 128GB"
+          Write-Host "Available disk: $free GB"
+
+          if ($free -gt 135) {
+            Write-Host "Disk may support 128GB pagefile"
+          } else {
+            Write-Host "Insufficient disk space"
+          }
+
+          Write-Host "Physical RAM is unchanged"
+
+      - name: Configure Software Graphics
+        shell: powershell
+        run: |
+          Write-Host "=== SOFTWARE GRAPHICS ==="
+          Write-Host "Microsoft WARP supports"
+          Write-Host "CPU-based Direct3D rendering"
+          Write-Host "for compatible applications."
+
+          Get-CimInstance Win32_VideoController |
+            Format-Table Name, DriverVersion
+
+          Write-Host "No NVIDIA RTX 2060 installed"
+
       - name: Configure RDP
         shell: powershell
         env:
@@ -26,7 +79,8 @@ jobs:
           $pass = ConvertTo-SecureString `
             $env:RDP_PASSWORD -AsPlainText -Force
 
-          New-LocalUser -Name $user `
+          New-LocalUser `
+            -Name $user `
             -Password $pass `
             -PasswordNeverExpires
 
@@ -36,15 +90,23 @@ jobs:
 
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" -Value 0
+            -Name "fDenyTSConnections" `
+            -Value 0
 
           Enable-NetFirewallRule `
             -DisplayGroup "Remote Desktop"
+
+          Write-Host "RDP configured"
+          Write-Host "Username: RDPUser"
 
       - name: Install ngrok
         shell: powershell
         run: |
           choco install ngrok -y --no-progress
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "ngrok installation failed"
+          }
 
       - name: Start ngrok TCP
         shell: powershell
@@ -55,35 +117,40 @@ jobs:
             throw "Missing NGROK_AUTHTOKEN secret"
           }
 
-          ngrok config add-authtoken $env:NGROK_AUTHTOKEN
+          ngrok config add-authtoken `
+            $env:NGROK_AUTHTOKEN
 
           Start-Process ngrok `
             -ArgumentList "tcp 3389" `
             -WindowStyle Hidden
 
-          Start-Sleep -Seconds 12
+          Start-Sleep -Seconds 15
 
-          try {
-            $data = Invoke-RestMethod `
-              "http://127.0.0.1:4040/api/tunnels"
+          $data = Invoke-RestMethod `
+            "http://127.0.0.1:4040/api/tunnels"
 
-            $tcp = $data.tunnels |
-              Where-Object { $_.proto -eq "tcp" } |
-              Select-Object -First 1
+          $tcp = $data.tunnels |
+            Where-Object { $_.proto -eq "tcp" } |
+            Select-Object -First 1
 
-            if (-not $tcp) {
-              throw "No TCP tunnel found"
-            }
-
-            Write-Host "RDP ADDRESS: $($tcp.public_url)"
-            Write-Host "USERNAME: RDPUser"
-          }
-          catch {
-            throw "ngrok TCP failed. Check account verification and TCP eligibility."
+          if (-not $tcp) {
+            throw "ngrok TCP tunnel unavailable"
           }
 
-      - name: Keep session alive
+          Write-Host "======================"
+          Write-Host "WINDOWS RDP READY"
+          Write-Host "======================"
+          Write-Host "ADDRESS: $($tcp.public_url)"
+          Write-Host "USERNAME: RDPUser"
+          Write-Host "PASSWORD: GitHub Secret"
+          Write-Host "======================"
+
+      - name: Keep Windows Running
         shell: powershell
         run: |
-          Write-Host "Temporary RDP session running"
-          Start-Sleep -Seconds 3000
+          Write-Host "Windows session active"
+
+          for ($i = 1; $i -le 50; $i++) {
+            Write-Host "Session active: $i"
+            Start-Sleep -Seconds 60
+          }
