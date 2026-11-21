@@ -1,5 +1,5 @@
 
-name: Windows RDP
+name: Windows RDP via ngrok - Admin
 
 on:
   workflow_dispatch:
@@ -9,81 +9,209 @@ permissions:
 
 jobs:
   windows:
+    name: Windows RDP Administrator
     runs-on: windows-2022
-    timeout-minutes: 6000
+    timeout-minutes: 5000
 
     steps:
-      - name: Configure RDP
+      - name: Configure RDP Administrator
         shell: powershell
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
+          $ErrorActionPreference = "Stop"
+
           if (-not $env:RDP_PASSWORD) {
             throw "Missing RDP_PASSWORD secret"
           }
 
           $user = "RDPUser"
+
           $pass = ConvertTo-SecureString `
             $env:RDP_PASSWORD -AsPlainText -Force
 
-          New-LocalUser -Name $user `
-            -Password $pass `
-            -PasswordNeverExpires
+          # Create or update user
+          $existing = Get-LocalUser `
+            -Name $user `
+            -ErrorAction SilentlyContinue
 
-          Add-LocalGroupMember `
-            -Group "Remote Desktop Users" `
-            -Member $user
+          if (-not $existing) {
+            New-LocalUser `
+              -Name $user `
+              -Password $pass `
+              -PasswordNeverExpires
+          }
+          else {
+            Set-LocalUser `
+              -Name $user `
+              -Password $pass
+          }
 
+          Enable-LocalUser -Name $user
+
+          # Grant Administrator permissions
+          $adminGroup = Get-LocalGroup `
+            -SID "S-1-5-32-544"
+
+          $adminMembers = Get-LocalGroupMember `
+            -Group $adminGroup.Name
+
+          $account = "$env:COMPUTERNAME\$user"
+
+          if ($adminMembers.Name -notcontains $account) {
+            Add-LocalGroupMember `
+              -Group $adminGroup.Name `
+              -Member $user
+          }
+
+          # Grant Remote Desktop permissions
+          $rdpGroup = Get-LocalGroup `
+            -SID "S-1-5-32-555"
+
+          $rdpMembers = Get-LocalGroupMember `
+            -Group $rdpGroup.Name
+
+          if ($rdpMembers.Name -notcontains $account) {
+            Add-LocalGroupMember `
+              -Group $rdpGroup.Name `
+              -Member $user
+          }
+
+          # Enable Remote Desktop
           Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" -Value 0
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          # Enable Network Level Authentication
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
 
           Enable-NetFirewallRule `
             -DisplayGroup "Remote Desktop"
+
+          Set-Service `
+            -Name TermService `
+            -StartupType Automatic
+
+          Start-Service `
+            -Name TermService `
+            -ErrorAction SilentlyContinue
+
+          # Verify Administrator permissions
+          $adminMembers = Get-LocalGroupMember `
+            -Group $adminGroup.Name
+
+          if ($adminMembers.Name -notcontains $account) {
+            throw "Administrator permission failed"
+          }
+
+          Write-Host "=========================="
+          Write-Host "WINDOWS ADMIN READY"
+          Write-Host "=========================="
+          Write-Host "USERNAME: RDPUser"
+          Write-Host "ROLE: Administrator"
+          Write-Host "RDP: Enabled"
+          Write-Host "APP INSTALL: Enabled"
+          Write-Host "=========================="
+
+      - name: Check Windows Hardware
+        shell: powershell
+        run: |
+          Write-Host "=== WINDOWS ==="
+          Get-ComputerInfo |
+            Select-Object WindowsProductName, OsVersion
+
+          Write-Host "=== CPU ==="
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, NumberOfCores
+
+          Write-Host "=== RAM ==="
+          $system = Get-CimInstance Win32_ComputerSystem
+          $ram = [math]::Round(
+            $system.TotalPhysicalMemory / 1GB, 2
+          )
+          Write-Host "Physical RAM: $ram GB"
+
+          Write-Host "=== GPU ==="
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion
+
+          Write-Host "=== DISK ==="
+          Get-PSDrive C |
+            Select-Object Name, Used, Free
 
       - name: Install ngrok
         shell: powershell
         run: |
           choco install ngrok -y --no-progress
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "ngrok installation failed"
+          }
+
       - name: Start ngrok TCP
         shell: powershell
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
+          $ErrorActionPreference = "Stop"
+
           if (-not $env:NGROK_AUTHTOKEN) {
             throw "Missing NGROK_AUTHTOKEN secret"
           }
 
-          ngrok config add-authtoken $env:NGROK_AUTHTOKEN
+          ngrok config add-authtoken `
+            $env:NGROK_AUTHTOKEN
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "ngrok authentication failed"
+          }
 
           Start-Process ngrok `
             -ArgumentList "tcp 3389" `
             -WindowStyle Hidden
 
-          Start-Sleep -Seconds 12
+          Start-Sleep -Seconds 15
 
           try {
             $data = Invoke-RestMethod `
               "http://127.0.0.1:4040/api/tunnels"
 
             $tcp = $data.tunnels |
-              Where-Object { $_.proto -eq "tcp" } |
+              Where-Object {
+                $_.proto -eq "tcp"
+              } |
               Select-Object -First 1
 
             if (-not $tcp) {
               throw "No TCP tunnel found"
             }
 
+            Write-Host "=========================="
+            Write-Host "WINDOWS RDP READY"
+            Write-Host "=========================="
             Write-Host "RDP ADDRESS: $($tcp.public_url)"
-            Write-Host "USERNAME: MinhQuang1993"
+            Write-Host "USERNAME: RDPUser"
+            Write-Host "ROLE: Administrator"
+            Write-Host "=========================="
           }
           catch {
-            throw "ngrok TCP failed. Check account verification and TCP eligibility."
+            throw "ngrok TCP failed: $($_.Exception.Message)"
           }
 
-      - name: Keep session alive
+      - name: Keep session alive 30000 Seconds
         shell: powershell
         run: |
-          Write-Host "Temporary RDP session running"
+          Write-Host "=========================="
+          Write-Host "WINDOWS RDP RUNNING"
+          Write-Host "=========================="
+          Write-Host "REQUESTED: 30000 SECONDS"
+          Write-Host "DURATION: 8 HOURS 20 MINUTES"
+          Write-Host "GITHUB RUNNER LIMITS APPLY"
+          Write-Host "=========================="
+
           Start-Sleep -Seconds 30000
+
