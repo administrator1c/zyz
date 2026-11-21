@@ -1,99 +1,89 @@
 
-name: WINDOWS NGROK V2.0
+name: Windows RDP via ngrok
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/windows.yml'
 
 permissions:
   contents: read
 
 jobs:
   windows:
-    name: Windows Server 2022
     runs-on: windows-2022
-    timeout-minutes: 3000
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: System Information
-        shell: pwsh
+      - name: Configure RDP
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          Write-Host "=== WINDOWS SERVER ==="
+          if (-not $env:RDP_PASSWORD) {
+            throw "Missing RDP_PASSWORD secret"
+          }
 
-          Get-ComputerInfo |
-            Select-Object WindowsProductName, OsVersion
+          $user = "RDPUser"
+          $pass = ConvertTo-SecureString `
+            $env:RDP_PASSWORD -AsPlainText -Force
 
-          Get-CimInstance Win32_Processor |
-            Select-Object Name, NumberOfCores
+          New-LocalUser -Name $user `
+            -Password $pass `
+            -PasswordNeverExpires
 
-          Get-CimInstance Win32_ComputerSystem |
-            Select-Object TotalPhysicalMemory
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $user
 
-      - name: Check RDP
-        shell: pwsh
-        run: |
-          Write-Host "=== RDP SERVICE ==="
-
-          Get-Service TermService |
-            Select-Object Name, Status, StartType
-
-          Get-ItemProperty `
+          Set-ItemProperty `
             -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
-            -Name fDenyTSConnections
+            -Name "fDenyTSConnections" -Value 0
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop"
 
       - name: Install ngrok
-        shell: pwsh
+        shell: powershell
         run: |
           choco install ngrok -y --no-progress
-          ngrok version
 
-      - name: Configure ngrok
-        shell: pwsh
+      - name: Start ngrok TCP
+        shell: powershell
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
-          if ([string]::IsNullOrWhiteSpace(
-            $env:NGROK_AUTHTOKEN
-          )) {
-            throw "Missing NGROK_AUTHTOKEN"
+          if (-not $env:NGROK_AUTHTOKEN) {
+            throw "Missing NGROK_AUTHTOKEN secret"
           }
 
-          ngrok config add-authtoken `
-            $env:NGROK_AUTHTOKEN
+          ngrok config add-authtoken $env:NGROK_AUTHTOKEN
 
-          Write-Host "ngrok configured"
+          Start-Process ngrok `
+            -ArgumentList "tcp 3389" `
+            -WindowStyle Hidden
 
-      - name: Generate Reports
-        if: always()
-        shell: pwsh
+          Start-Sleep -Seconds 12
+
+          try {
+            $data = Invoke-RestMethod `
+              "http://127.0.0.1:4040/api/tunnels"
+
+            $tcp = $data.tunnels |
+              Where-Object { $_.proto -eq "tcp" } |
+              Select-Object -First 1
+
+            if (-not $tcp) {
+              throw "No TCP tunnel found"
+            }
+
+            Write-Host "RDP ADDRESS: $($tcp.public_url)"
+            Write-Host "USERNAME: RDPUser"
+          }
+          catch {
+            throw "ngrok TCP failed. Check account verification and TCP eligibility."
+          }
+
+      - name: Keep session alive
+        shell: powershell
         run: |
-          Get-ComputerInfo |
-            Out-File windows-info.txt
-
-          Get-Service TermService |
-            Out-File rdp-status.txt
-
-          if (Get-Command ngrok -ErrorAction SilentlyContinue) {
-            ngrok version |
-              Out-File ngrok-version.txt
-          } else {
-            "ngrok not installed" |
-              Out-File ngrok-version.txt
-          }
-
-      - name: Upload Reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-ngrok-reports
-          path: |
-            windows-info.txt
-            rdp-status.txt
-            ngrok-version.txt
+          Write-Host "Temporary RDP session running"
+          Start-Sleep -Seconds 3000
